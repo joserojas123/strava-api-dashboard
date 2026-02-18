@@ -3,7 +3,7 @@ import functions_framework
 from pprint import pprint
 
 # Configuración manual para la prueba
-ACCESS_TOKEN = "098d653f26e6d56c83e5c0552b53110deaa3d20c"
+ACCESS_TOKEN = "db7c8b4090d2d886a1df839b917ed6f0c36783b1"
 
 
 @functions_framework.http
