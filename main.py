@@ -30,3 +30,4 @@ def get_strava_activities(request):
         return ({"status": "exito", "data": data}, 200)
     else:
         return ({"error": response.text}, response.status_code)
+
