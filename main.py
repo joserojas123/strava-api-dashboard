@@ -1,11 +1,34 @@
+import os
 import requests
 import functions_framework
 from pprint import pprint
 from google.cloud import bigquery
 
-# Configuración manual para la prueba
-ACCESS_TOKEN = "ca672781dc902b2cf9df231f24f464b51359ab8e"
+# Configuración (Idealmente desde variables de entorno)
+# CLIENT_ID = os.environ.get("STRAVA_CLIENT_ID", "TU_CLIENT_ID")
+# CLIENT_SECRET = os.environ.get("STRAVA_CLIENT_SECRET", "TU_CLIENT_SECRET")
+# REFRESH_TOKEN = os.environ.get("STRAVA_REFRESH_TOKEN", "TU_REFRESH_TOKEN")
+
+CLIENT_ID = "203413"
+CLIENT_SECRET = "20ec8ef05cdcea56147629cf87890b6665bc236c"
+REFRESH_TOKEN = "4e34861332b2ea60e7e3e0f3cbf12b4c42dc7639"
+
 TABLE_ID = "strava-api-dashboard.traceflow_dataset.activities"
+
+def get_new_access_token():
+    """Usa el refresh_token para obtener un access_token válido."""
+    auth_url = "https://www.strava.com/oauth/token"
+    payload = {
+        'client_id': CLIENT_ID,
+        'client_secret': CLIENT_SECRET,
+        'refresh_token': REFRESH_TOKEN,
+        'grant_type': 'refresh_token',
+        'f': 'json'
+    }
+    print("Solicitando nuevo access token...")
+    res = requests.post(auth_url, data=payload)
+    res.raise_for_status()
+    return res.json().get('access_token')
 
 @functions_framework.http
 def get_strava_activities(request):
@@ -13,16 +36,24 @@ def get_strava_activities(request):
     Función que recorre todas las páginas de la API de Strava
     para extraer el historial completo de actividades.
     """
+    print("Iniciando renovación de token...")
+    # --- 1. Obtener Token Dinámico ---
+    try:
+        current_access_token = get_new_access_token()
+    except Exception as e:
+        return ({"error": "Falló la renovación del token", "details": str(e)}, 500)
+
     client = bigquery.Client()
     all_activities = []
     page = 1
     per_page = 200  # Máximo permitido por Strava para ser eficiente
 
     url = "https://www.strava.com/api/v3/athlete/activities"
-    headers = {'Authorization': f'Bearer {ACCESS_TOKEN}'}
+    headers = {'Authorization': f'Bearer {current_access_token}'}
 
     print("Iniciando extracción masiva de actividades...")
 
+    # --- 2. Extracción de datos ---
     while True:
         params = {
             'page': page,
@@ -88,15 +119,18 @@ def get_strava_activities(request):
         actividades_limpias.append(fila)
 
     # 3. Inserción en BigQuery
+
     if actividades_limpias:
         try:
             # Opción recomendada: TRUNCATE mediante una query DDL
+            print("Iniciando truncado de tabla...")
             truncate_query = f"TRUNCATE TABLE `{TABLE_ID}`"
             query_job = client.query(truncate_query)
             query_job.result()  # Esperar a que termine de borrar
             print(f"Tabla {TABLE_ID} truncada con éxito.")
 
             # Inserción de los nuevos datos
+            print("Iniciando inserción en Bigquery...")
             errors = client.insert_rows_json(TABLE_ID, actividades_limpias)
 
             if not errors:
