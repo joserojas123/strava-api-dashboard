@@ -89,10 +89,22 @@ def get_strava_activities(request):
 
     # 3. Inserción en BigQuery
     if actividades_limpias:
-        errors = client.insert_rows_json(TABLE_ID, actividades_limpias)
-        if errors == []:
-            return ({"status": "éxito", "filas_insertadas": len(actividades_limpias)}, 200)
-        else:
-            return ({"status": "error", "errores_bq": errors}, 500)
+        try:
+            # Opción recomendada: TRUNCATE mediante una query DDL
+            truncate_query = f"TRUNCATE TABLE `{TABLE_ID}`"
+            query_job = client.query(truncate_query)
+            query_job.result()  # Esperar a que termine de borrar
+            print(f"Tabla {TABLE_ID} truncada con éxito.")
 
-    return ({"status": "sin datos", "mensage": "No se encontraron actividades nuevas"}, 200)
+            # Inserción de los nuevos datos
+            errors = client.insert_rows_json(TABLE_ID, actividades_limpias)
+
+            if not errors:
+                return ({"status": "éxito", "filas_insertadas": len(actividades_limpias)}, 200)
+            else:
+                return ({"status": "error_insercion", "errores_bq": errors}, 500)
+
+        except Exception as e:
+            return ({"status": "error_bq", "detalle": str(e)}, 500)
+
+    return ({"status": "sin datos", "mensaje": "No se encontraron actividades"}, 200)
