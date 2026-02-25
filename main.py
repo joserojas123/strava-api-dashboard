@@ -57,18 +57,33 @@ def get_strava_activities(request):
     actividades_limpias = []
     for act in all_activities:
         fila = {
+            # Identificadores
+            "id": act.get("id"),
             "athlete_id": act.get("athlete", {}).get("id"),
-            "average_speed": act.get("average_speed"),
-            "distance": act.get("distance"),
-            "elapsed_time": act.get("elapsed_time"),
-            "location_city": act.get("location_city"),
-            "location_country": act.get("location_country"),
-            "location_state": act.get("location_state"),
-            "max_speed": act.get("max_speed"),
-            "moving_time": act.get("moving_time"),
             "name": act.get("name"),
-            "sport_type": act.get("sport_type"),
-            "start_date_local": act.get("start_date_local")
+
+            # Métricas (Floats e Integers)
+            "distance": float(act.get("distance", 0)),
+            "moving_time": int(act.get("moving_time", 0)),
+            "elapsed_time": int(act.get("elapsed_time", 0)),
+            "average_speed": float(act.get("average_speed", 0)),
+            "max_speed": float(act.get("max_speed", 0)),
+            "total_elevation_gain": float(act.get("total_elevation_gain", 0)),
+
+            # Fechas (Strava devuelve strings ISO 8601, BigQuery los acepta bien)
+            "start_date": act.get("start_date"),
+            "start_date_local": act.get("start_date_local"),
+            "utc_offset": act.get("utc_offset"), # Desfase en segundos
+
+            # Ubicación y Dispositivo
+            "location_city": act.get("location_city"),
+            "location_state": act.get("location_state"),
+            "location_country": act.get("location_country"),
+            "device_name": act.get("device_name"),
+
+            # Clasificación
+            "type": act.get("type"),
+            "sport_type": act.get("sport_type")
         }
         actividades_limpias.append(fila)
 
