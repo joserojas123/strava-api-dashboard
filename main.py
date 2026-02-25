@@ -4,7 +4,7 @@ from pprint import pprint
 from google.cloud import bigquery
 
 # Configuración manual para la prueba
-ACCESS_TOKEN = "db7c8b4090d2d886a1df839b917ed6f0c36783b1"
+ACCESS_TOKEN = "ca672781dc902b2cf9df231f24f464b51359ab8e"
 TABLE_ID = "strava-api-dashboard.traceflow_dataset.activities"
 
 @functions_framework.http
