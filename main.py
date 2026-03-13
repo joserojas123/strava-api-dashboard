@@ -15,8 +15,25 @@ REFRESH_TOKEN = "4e34861332b2ea60e7e3e0f3cbf12b4c42dc7639"
 
 TABLE_ID = "strava-api-dashboard.traceflow_dataset.activities"
 
+# Función que obtiene un nuevo token de acceso usando el refresh token
 def get_new_access_token():
-    """Usa el refresh_token para obtener un access_token válido."""
+    """
+    Obtiene un nuevo access_token de la API de Strava usando el refresh_token.
+    
+    Esta función realiza una solicitud POST a los servidores de Strava con las
+    credenciales de la aplicación (CLIENT_ID y CLIENT_SECRET) junto con el
+    REFRESH_TOKEN para intercambiarlo por un access_token válido.
+    
+    Los access tokens de Strava tienen una validez limitada (aproximadamente 6 horas),
+    por lo que es necesario renovarlos regularmente usando el refresh_token que no expira.
+    
+    Returns:
+        str: El access_token válido para usar en las peticiones autenticadas a la API de Strava
+        
+    Raises:
+        RequestException: Si la solicitud HTTP falla o la API devuelve un error
+        KeyError: Si la respuesta no contiene el campo 'access_token'
+    """
     auth_url = "https://www.strava.com/oauth/token"
     payload = {
         'client_id': CLIENT_ID,
@@ -30,14 +47,39 @@ def get_new_access_token():
     res.raise_for_status()
     return res.json().get('access_token')
 
+# Función que obtiene las actividades de Strava y las inserta en BigQuery
 @functions_framework.http
 def get_strava_activities(request):
     """
-    Función que recorre todas las páginas de la API de Strava
-    para extraer el historial completo de actividades.
+    Función principal que extrae todas las actividades del atleta desde la API de Strava,
+    las transforma y las carga en BigQuery de manera completa.
+    
+    Proceso:
+    1. Obtiene un nuevo access_token dinámico usando el refresh_token
+    2. Realiza solicitudes paginadas a la API de Strava para extraer todas las actividades
+    3. Transforma y limpia los datos recibidos en el formato esperado por BigQuery
+    4. Trunca la tabla existente en BigQuery para evitar duplicados
+    5. Inserta los datos frescos en la tabla
+    
+    Parameters:
+        request: Objeto HTTP request de Flask/Google Cloud Functions (no se usa en esta implementación)
+    
+    Returns:
+        tuple: Una tupla (response_dict, status_code) donde:
+            - response_dict es un diccionario con el resultado (éxito, error, cantidad de filas)
+            - status_code es el código HTTP (200 para éxito, 500 para errores)
+            
+    Ejemplo de respuesta exitosa:
+        {"status": "éxito", "filas_insertadas": 245}, 200
+        
+    Ejemplo de respuesta con error:
+        {"error": "Falló la renovación del token", "details": "..."}, 500
     """
     print("Iniciando renovación de token...")
     # --- 1. Obtener Token Dinámico ---
+    # Se obtiene un nuevo access_token de Strava. Si falla, la función retorna
+    # un error 500 sin intentar continuar. El token es necesario para autenticarse
+    # en todas las solicitudes posteriores a la API.
     try:
         current_access_token = get_new_access_token()
     except Exception as e:
@@ -53,7 +95,10 @@ def get_strava_activities(request):
 
     print("Iniciando extracción masiva de actividades...")
 
-    # --- 2. Extracción de datos ---
+    # --- 2. Extracción de datos paginada ---
+    # Strava limita las respuestas a 200 actividades por página. Iteramos sobre
+    # todas las páginas hasta obtener una respuesta vacía o una página con menos
+    # de 200 resultados. Esto indica que hemos llegado al final del historial.
     while True:
         params = {
             'page': page,
@@ -85,15 +130,28 @@ def get_strava_activities(request):
         except Exception as e:
             return ({"error": str(e)}, 500)
 
+    # --- 2.5. Transformación y limpieza de datos ---
+    # Extraemos solo los campos necesarios de cada actividad y convertimos
+    # los tipos de datos al formato esperado por BigQuery. Se utiliza .get()
+    # con valores por defecto para evitar KeyErrors si falta algún campo.
     actividades_limpias = []
     for act in all_activities:
         fila = {
-            # Identificadores
+            # Identificadores únicos
+            # 'id': ID único de la actividad en Strava
+            # 'athlete_id': ID del atleta propietario de la actividad
+            # 'name': Nombre/descripción de la actividad (ej: "Morning Run")
             "id": act.get("id"),
             "athlete_id": act.get("athlete", {}).get("id"),
             "name": act.get("name"),
 
-            # Métricas (Floats e Integers)
+            # Métricas de rendimiento (convertidas a tipos numéricos)
+            # 'distance': Distancia en metros
+            # 'moving_time': Tiempo en movimiento en segundos
+            # 'elapsed_time': Tiempo total incluyendo paradas en segundos
+            # 'average_speed': Velocidad promedio en m/s
+            # 'max_speed': Velocidad máxima alcanzada en m/s
+            # 'total_elevation_gain': Ganancia de elevación acumulada en metros
             "distance": float(act.get("distance", 0)),
             "moving_time": int(act.get("moving_time", 0)),
             "elapsed_time": int(act.get("elapsed_time", 0)),
@@ -101,35 +159,46 @@ def get_strava_activities(request):
             "max_speed": float(act.get("max_speed", 0)),
             "total_elevation_gain": float(act.get("total_elevation_gain", 0)),
 
-            # Fechas (Strava devuelve strings ISO 8601, BigQuery los acepta bien)
+            # Timestamps en formato ISO 8601
+            # 'start_date': Fecha y hora UTC de inicio
+            # 'start_date_local': Fecha y hora en zona horaria local del atleta
+            # 'utc_offset': Desfase en segundos respecto a UTC (ej: -18000 para EST)
             "start_date": act.get("start_date"),
             "start_date_local": act.get("start_date_local"),
-            "utc_offset": act.get("utc_offset"), # Desfase en segundos
+            "utc_offset": act.get("utc_offset"),
 
-            # Ubicación y Dispositivo
+            # Información de ubicación
+            # Estos campos pueden ser null si la actividad no incluye datos de ubicación
             "location_city": act.get("location_city"),
             "location_state": act.get("location_state"),
             "location_country": act.get("location_country"),
             "device_name": act.get("device_name"),
 
-            # Clasificación
+            # Clasificación de la actividad
+            # 'type': Tipo general (Run, Ride, Swim, etc.)
+            # 'sport_type': Subtipo más específico (Trail Run, Mountain Bike, etc.)
             "type": act.get("type"),
             "sport_type": act.get("sport_type")
         }
         actividades_limpias.append(fila)
 
-    # 3. Inserción en BigQuery
+    # --- 3. Inserción en BigQuery ---
+    # Antes de insertar los nuevos datos, truncamos (borramos) el contenido anterior
+    # de la tabla. Esto asegura que la tabla siempre contiene el estado más reciente
+    # del historial de actividades sin duplicados.
 
     if actividades_limpias:
         try:
-            # Opción recomendada: TRUNCATE mediante una query DDL
+            # Truncado mediante una query DDL (Data Definition Language)
+            # TRUNCATE es más eficiente que DELETE para borrar todos los datos.
             print("Iniciando truncado de tabla...")
             truncate_query = f"TRUNCATE TABLE `{TABLE_ID}`"
             query_job = client.query(truncate_query)
-            query_job.result()  # Esperar a que termine de borrar
+            query_job.result()  # Esperar a que termine la operación de borrado
             print(f"Tabla {TABLE_ID} truncada con éxito.")
 
-            # Inserción de los nuevos datos
+            # Inserción de los nuevos datos limpios y transformados
+            # insert_rows_json es más eficiente que append_rows para múltiples registros
             print("Iniciando inserción en Bigquery...")
             errors = client.insert_rows_json(TABLE_ID, actividades_limpias)
 
